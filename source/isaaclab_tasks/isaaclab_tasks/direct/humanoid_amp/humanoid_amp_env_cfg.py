@@ -16,8 +16,13 @@ from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import PhysxCfg, SimulationCfg
 from isaaclab.utils import configclass
+from enum import Enum
+from .humanoid_amp_multitask_cfg import PathFollowingTaskCfg, DanceTaskCfg, TaskType
 
 MOTIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "motions")
+
+
+
 
 
 @configclass
@@ -59,10 +64,14 @@ class HumanoidAmpEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=10.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=4096, env_spacing=10.0, replicate_physics=True
+    )
 
     # robot
-    robot: ArticulationCfg = HUMANOID_28_CFG.replace(prim_path="/World/envs/env_.*/Robot").replace(
+    robot: ArticulationCfg = HUMANOID_28_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot"
+    ).replace(
         actuators={
             "body": ImplicitActuatorCfg(
                 joint_names_expr=[".*"],
@@ -87,3 +96,55 @@ class HumanoidAmpRunEnvCfg(HumanoidAmpEnvCfg):
 @configclass
 class HumanoidAmpWalkEnvCfg(HumanoidAmpEnvCfg):
     motion_file = os.path.join(MOTIONS_DIR, "humanoid_walk.npz")
+
+
+@configclass
+class HumanoidAmpMultiTaskEnvCfg(HumanoidAmpEnvCfg):
+    observation_space = 81 + 20 + 2
+    motion_file = os.path.join(MOTIONS_DIR, "humanoid_walk.npz") # dummy motion file does not matter
+    tasks = [
+        {
+            "type": TaskType.PATH_FOLLOWING,
+            "cfg": PathFollowingTaskCfg(
+                task_dim=20,
+                task_episode_length_s=10.0,
+                num_verts=101,
+                dtheta_max=2.0,
+                speed_min=0.5,
+                speed_max=1.0,
+                accel_max=1.0,
+                sharp_turn_prob=0.15,
+                num_traj_samples=10,
+                traj_sample_timestep=0.5,
+                motion_files=[
+                    {
+                        "motion_file": os.path.join(MOTIONS_DIR, "humanoid_walk.npz"),
+                        "prob": 0.5,
+                    },
+                    {
+                        "motion_file": os.path.join(MOTIONS_DIR, "humanoid_run.npz"),
+                        "prob": 0.5,
+                    },
+                ],
+                task_probability=0.5,
+            ),
+        },
+        {
+            "type": TaskType.DANCE,
+            "cfg": DanceTaskCfg(
+                task_episode_length_s=10.0,
+                task_dim=2,
+                motion_files=[
+                    {
+                        "motion_file": os.path.join(MOTIONS_DIR, "humanoid_dance.npz"),
+                        "prob": 0.75,
+                    },
+                    {
+                        "motion_file": os.path.join(MOTIONS_DIR, "humanoid_walk.npz"),
+                        "prob": 0.25,
+                    },
+                ],
+                task_probability=0.5,
+            ),
+        },
+    ]
