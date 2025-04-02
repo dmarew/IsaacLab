@@ -9,19 +9,17 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from .humanoid_amp_env_cfg import HumanoidAmpMultiTaskEnvCfg
+from .humanoid_amp_multi_task_env_cfg import HumanoidAmpMultiTaskEnvCfg
 from .humanoid_amp_env import HumanoidAmpEnv
 from .motions.motion_loader import TaskMultiMotionLoader
 from .humanoid_amp_env import compute_obs
-import isaaclab.utils.math as math_utils
+# import isaaclab.utils.math as math_utils
 from typing import Tuple
-from .humanoid_amp_multitask_cfg import (
-    TaskCfg,
-    PathFollowingTaskCfg,
-    DanceTaskCfg,
+from .tasks.task_cfgs import (
     TaskType,
 )
-
+from .tasks.path_following_task import PathFollowingTask
+from .tasks.dance_task import DanceTask
 
 class HumanoidAmpMultiTaskEnv(HumanoidAmpEnv):
     cfg: HumanoidAmpMultiTaskEnvCfg
@@ -47,6 +45,8 @@ class HumanoidAmpMultiTaskEnv(HumanoidAmpEnv):
                 )
             elif task["type"] == TaskType.DANCE:
                 self.tasks.append(DanceTask(task["cfg"], self.num_envs, self.device))
+            else:
+                raise ValueError(f"Task type {task['type']} not supported")
 
         self._motion_loader = TaskMultiMotionLoader(
             self.motion_files, self.task_probabilities, self.device
@@ -124,7 +124,11 @@ class HumanoidAmpMultiTaskEnv(HumanoidAmpEnv):
         return torch.cat(task_obs, dim=-1)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        return super()._get_dones()
+        died, time_out = super()._get_dones()
+        for i, task in enumerate(self.tasks):
+            env_ids = torch.where(self.task_assignment == i)[0]
+            time_out[env_ids] = time_out[env_ids] | task.get_done(self)[env_ids]
+        return died, time_out
 
     def _get_rewards(self) -> torch.Tensor:
         rewards = torch.zeros(self.num_envs, device=self.device)
@@ -141,9 +145,8 @@ class HumanoidAmpMultiTaskEnv(HumanoidAmpEnv):
         times_dict = self._motion_loader.sample_task_motion_and_times(num_samples)
 
         if start:
-            for i in range(self.num_tasks):
-                for j in range(self.num_motions_by_task[i]):
-                    times_dict[(i, j)][:] = 0
+            for (task_idx, motion_idx) in times_dict.keys():
+                times_dict[(task_idx, motion_idx)][:] = 0
 
         (
             dof_positions,
@@ -237,157 +240,153 @@ class HumanoidAmpMultiTaskEnv(HumanoidAmpEnv):
 # abstract class for Tasks each task should have obs and reward function
 
 
-class Task:
-    def __init__(self, cfg: TaskCfg):
-        self.cfg = cfg
+# class Task:
+#     def __init__(self, cfg: TaskCfg):
+#         self.cfg = cfg
 
-    def get_obs(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        pass
+#     def get_obs(
+#         self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
+#     ) -> torch.Tensor:
+#         pass
 
-    def get_reward(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        pass
+#     def get_reward(
+#         self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
+#     ) -> torch.Tensor:
+#         pass
 
-    def get_done(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        pass
+#     def get_done(
+#         self, env: HumanoidAmpMultiTaskEnv
+#     ) -> torch.Tensor:
+#         return env.episode_length_buf >= int(self.cfg.task_episode_length_s/env.step_dt)  - 1
 
-    def reset(self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor):
-        pass
-
-
-from .motions.traj_generator import TrajGenerator
+#     def reset(self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor):
+#         pass
 
 
-class PathFollowingTask(Task):
-    def __init__(self, cfg: PathFollowingTaskCfg, num_envs: int, device: torch.device):
-        super().__init__(cfg)
-        self.traj_generator = TrajGenerator(
-            num_envs,
-            cfg.task_episode_length_s,
-            cfg.num_verts,
-            device,
-            cfg.dtheta_max,
-            cfg.speed_min,
-            cfg.speed_max,
-            cfg.accel_max,
-            cfg.sharp_turn_prob,
-        )
-        self.num_traj_samples = cfg.num_traj_samples
-        self.traj_sample_timestep = cfg.traj_sample_timestep
-
-    def get_obs(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-
-        timestep_beg = env.episode_length_buf[env_ids] * env.step_dt
-        timesteps = torch.arange(
-            self.num_traj_samples, device=env.device, dtype=torch.float
-        )
-        timesteps = timesteps * self.traj_sample_timestep
-        traj_timesteps = timestep_beg.unsqueeze(-1) + timesteps
-
-        env_ids_tiled = torch.broadcast_to(env_ids.unsqueeze(-1), traj_timesteps.shape)
-
-        traj_samples_flat = self.traj_generator.calc_pos(
-            env_ids_tiled.flatten(), traj_timesteps.flatten()
-        )
-        traj_samples = torch.reshape(
-            traj_samples_flat,
-            shape=(
-                env_ids.shape[0],
-                self.num_traj_samples,
-                traj_samples_flat.shape[-1],
-            ),
-        )
-
-        root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index]
-        root_rot = env.robot.data.body_quat_w[env_ids, env.ref_body_index]
-
-        return compute_location_observations(root_pos, root_rot, traj_samples)
-
-    def get_reward(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index]
-        time = env.episode_length_buf[env_ids] * env.step_dt
-        tar_pos = self.traj_generator.calc_pos(env_ids, time)
-        return compute_location_reward(root_pos, tar_pos)
-
-    def reset(self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor):
-        root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index]
-        all_env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-        self.traj_generator.reset(all_env_ids, root_pos)
-
-class DanceTask(Task):
-    def __init__(self, cfg: DanceTaskCfg, num_envs: int, device: torch.device):
-        super().__init__(cfg)
-
-    def get_obs(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index][:, 0:2]
-        return root_pos
-
-    def get_reward(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        return torch.zeros(len(env_ids), device=env.device)
-
-    def get_done(
-        self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
-    ) -> torch.Tensor:
-        return torch.zeros(len(env_ids), device=env.device)
-
-    def reset(self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor):
-        pass
+# from .motions.traj_generator import TrajGenerator
 
 
-@torch.jit.script
-def compute_location_reward(root_pos, tar_pos):
-    # type: (Tensor, Tensor) -> Tensor
-    pos_err_scale = 2.0
+# class PathFollowingTask(Task):
+#     def __init__(self, cfg: PathFollowingTaskCfg, num_envs: int, device: torch.device):
+#         super().__init__(cfg)
+#         self.traj_generator = TrajGenerator(
+#             num_envs,
+#             cfg.task_episode_length_s,
+#             cfg.num_verts,
+#             device,
+#             cfg.dtheta_max,
+#             cfg.speed_min,
+#             cfg.speed_max,
+#             cfg.accel_max,
+#             cfg.sharp_turn_prob,
+#         )
+#         self.num_traj_samples = cfg.num_traj_samples
+#         self.traj_sample_timestep = cfg.traj_sample_timestep
 
-    pos_diff = tar_pos[..., 0:2] - root_pos[..., 0:2]
-    pos_err = torch.sum(pos_diff * pos_diff, dim=-1)
+#     def get_obs(
+#         self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
+#     ) -> torch.Tensor:
 
-    pos_reward = torch.exp(-pos_err_scale * pos_err)
+#         timestep_beg = env.episode_length_buf[env_ids] * env.step_dt
+#         timesteps = torch.arange(
+#             self.num_traj_samples, device=env.device, dtype=torch.float
+#         )
+#         timesteps = timesteps * self.traj_sample_timestep
+#         traj_timesteps = timestep_beg.unsqueeze(-1) + timesteps
 
-    reward = pos_reward
+#         env_ids_tiled = torch.broadcast_to(env_ids.unsqueeze(-1), traj_timesteps.shape)
 
-    return reward
+#         traj_samples_flat = self.traj_generator.calc_pos(
+#             env_ids_tiled.flatten(), traj_timesteps.flatten()
+#         )
+#         traj_samples = torch.reshape(
+#             traj_samples_flat,
+#             shape=(
+#                 env_ids.shape[0],
+#                 self.num_traj_samples,
+#                 traj_samples_flat.shape[-1],
+#             ),
+#         )
+
+#         root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index]
+#         root_rot = env.robot.data.body_quat_w[env_ids, env.ref_body_index]
+
+#         return compute_location_observations(root_pos, root_rot, traj_samples)
+
+#     def get_reward(
+#         self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
+#     ) -> torch.Tensor:
+#         root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index]
+#         time = env.episode_length_buf[env_ids] * env.step_dt
+#         tar_pos = self.traj_generator.calc_pos(env_ids, time)
+#         return compute_location_reward(root_pos, tar_pos)
+
+#     def reset(self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor):
+#         root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index]
+#         all_env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
+#         self.traj_generator.reset(all_env_ids, root_pos)
+
+# class DanceTask(Task):
+#     def __init__(self, cfg: DanceTaskCfg, num_envs: int, device: torch.device):
+#         super().__init__(cfg)
+
+#     def get_obs(
+#         self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
+#     ) -> torch.Tensor:
+#         root_pos = env.robot.data.body_pos_w[env_ids, env.ref_body_index][:, 0:2]
+#         return root_pos
+
+#     def get_reward(
+#         self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor
+#     ) -> torch.Tensor:
+#         return torch.zeros(len(env_ids), device=env.device)
 
 
-@torch.jit.script
-def compute_location_observations(root_pos, root_rot, traj_samples):
-    # type: (Tensor, Tensor, Tensor) -> Tensor
+#     def reset(self, env: HumanoidAmpMultiTaskEnv, env_ids: torch.Tensor):
+#         pass
 
-    heading_rot = math_utils.calc_heading_quat_inv(root_rot)
-    heading_rot_exp = torch.broadcast_to(
-        heading_rot.unsqueeze(-2),
-        (heading_rot.shape[0], traj_samples.shape[1], heading_rot.shape[1]),
-    )
-    heading_rot_exp = torch.reshape(
-        heading_rot_exp,
-        (heading_rot_exp.shape[0] * heading_rot_exp.shape[1], heading_rot_exp.shape[2]),
-    )
-    traj_samples_delta = traj_samples - root_pos.unsqueeze(-2)
-    traj_samples_delta_flat = torch.reshape(
-        traj_samples_delta,
-        (
-            traj_samples_delta.shape[0] * traj_samples_delta.shape[1],
-            traj_samples_delta.shape[2],
-        ),
-    )
-    local_traj_pos = math_utils.my_quat_rotate(heading_rot_exp, traj_samples_delta_flat)
-    local_traj_pos = local_traj_pos[..., 0:2]
 
-    obs = torch.reshape(
-        local_traj_pos,
-        (traj_samples.shape[0], traj_samples.shape[1] * local_traj_pos.shape[1]),
-    )
-    return obs
+# @torch.jit.script
+# def compute_location_reward(root_pos, tar_pos):
+#     # type: (Tensor, Tensor) -> Tensor
+#     pos_err_scale = 2.0
+
+#     pos_diff = tar_pos[..., 0:2] - root_pos[..., 0:2]
+#     pos_err = torch.sum(pos_diff * pos_diff, dim=-1)
+
+#     pos_reward = torch.exp(-pos_err_scale * pos_err)
+
+#     reward = pos_reward
+
+#     return reward
+
+
+# @torch.jit.script
+# def compute_location_observations(root_pos, root_rot, traj_samples):
+#     # type: (Tensor, Tensor, Tensor) -> Tensor
+
+#     heading_rot = math_utils.calc_heading_quat_inv(root_rot)
+#     heading_rot_exp = torch.broadcast_to(
+#         heading_rot.unsqueeze(-2),
+#         (heading_rot.shape[0], traj_samples.shape[1], heading_rot.shape[1]),
+#     )
+#     heading_rot_exp = torch.reshape(
+#         heading_rot_exp,
+#         (heading_rot_exp.shape[0] * heading_rot_exp.shape[1], heading_rot_exp.shape[2]),
+#     )
+#     traj_samples_delta = traj_samples - root_pos.unsqueeze(-2)
+#     traj_samples_delta_flat = torch.reshape(
+#         traj_samples_delta,
+#         (
+#             traj_samples_delta.shape[0] * traj_samples_delta.shape[1],
+#             traj_samples_delta.shape[2],
+#         ),
+#     )
+#     local_traj_pos = math_utils.my_quat_rotate(heading_rot_exp, traj_samples_delta_flat)
+#     local_traj_pos = local_traj_pos[..., 0:2]
+
+#     obs = torch.reshape(
+#         local_traj_pos,
+#         (traj_samples.shape[0], traj_samples.shape[1] * local_traj_pos.shape[1]),
+#     )
+#     return obs

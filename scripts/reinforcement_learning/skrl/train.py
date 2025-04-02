@@ -71,7 +71,7 @@ parser.add_argument(
     help="The RL algorithm used for training the skrl agent.",
 )
 parser.add_argument(
-    "--custom_amp", action="store_true", default=False, help="Use custom AMP model."
+    "--task_amp", action="store_true", default=False, help="Use task AMP model."
 )
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -139,7 +139,7 @@ agent_cfg_entry_point = (
 )
 
 
-class CustomAMPRunner(Runner):
+class TaskAMPRunner(Runner):
     def __init__(self, env, agent_cfg, models):
         self._predefined_models = models
         # Call the parent constructor. This will eventually call our overridden _generate_models.
@@ -189,7 +189,8 @@ def main(
 
     # specify directory for logging experiments
     log_root_path = os.path.join(
-        "logs", "skrl", agent_cfg["agent"]["experiment"]["directory"]
+        os.getenv("ISAACLAB_LOG_PATH", "logs"),
+        "skrl", agent_cfg["agent"]["experiment"]["directory"]
     )
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
@@ -247,7 +248,7 @@ def main(
     # configure and instantiate the skrl runner
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
 
-    if args_cli.custom_amp:
+    if args_cli.task_amp:
         from tokenizer_models import (
             TokenHSIPolicy,
             TokenHSIValueFunction,
@@ -272,11 +273,11 @@ def main(
         models["agent"]["discriminator"] = TokenHSIConditionalDiscriminator(
             env.amp_observation_space, env.action_space, env.device
         )
-        print(f"\033[92mRunning custom AMP models....\033[0m")
+        print(f"\033[92mRunning task AMP models....\033[0m")
         print(f"🚀" * 30)
         print(models)
         print(f"🚀" * 30)
-        runner = CustomAMPRunner(env, agent_cfg, models)
+        runner = TaskAMPRunner(env, agent_cfg, models)
 
     else:
         runner = Runner(env, agent_cfg)
