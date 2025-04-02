@@ -2140,3 +2140,38 @@ def calc_heading_quat_inv(q):
 
     heading_q = my_quat_from_angle_axis(-heading, axis)
     return heading_q
+@torch.jit.script
+def quat_to_tan_norm(q):
+    # type: (Tensor) -> Tensor
+    # represents a rotation using the tangent and normal vectors
+    ref_tan = torch.zeros_like(q[..., 0:3])
+    ref_tan[..., 0] = 1
+    tan = quat_rotate(q, ref_tan)
+    
+    ref_norm = torch.zeros_like(q[..., 0:3])
+    ref_norm[..., -1] = 1
+    norm = quat_rotate(q, ref_norm)
+    
+    norm_tan = torch.cat([tan, norm], dim=len(tan.shape) - 1)
+    return norm_tan
+@torch.jit.script
+def get_euler_xyz(q):
+    qx, qy, qz, qw = 0, 1, 2, 3
+    # roll (x-axis rotation)
+    sinr_cosp = 2.0 * (q[:, qw] * q[:, qx] + q[:, qy] * q[:, qz])
+    cosr_cosp = q[:, qw] * q[:, qw] - q[:, qx] * \
+        q[:, qx] - q[:, qy] * q[:, qy] + q[:, qz] * q[:, qz]
+    roll = torch.atan2(sinr_cosp, cosr_cosp)
+
+    # pitch (y-axis rotation)
+    sinp = 2.0 * (q[:, qw] * q[:, qy] - q[:, qz] * q[:, qx])
+    pitch = torch.where(torch.abs(sinp) >= 1, copysign(
+        np.pi / 2.0, sinp), torch.asin(sinp))
+
+    # yaw (z-axis rotation)
+    siny_cosp = 2.0 * (q[:, qw] * q[:, qz] + q[:, qx] * q[:, qy])
+    cosy_cosp = q[:, qw] * q[:, qw] + q[:, qx] * \
+        q[:, qx] - q[:, qy] * q[:, qy] - q[:, qz] * q[:, qz]
+    yaw = torch.atan2(siny_cosp, cosy_cosp)
+
+    return roll % (2*np.pi), pitch % (2*np.pi), yaw % (2*np.pi)

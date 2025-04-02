@@ -2,10 +2,31 @@ from .tasks.task_cfgs import PathFollowingTaskCfg, DanceTaskCfg, TaskType
 import os
 from isaaclab.utils import configclass
 from .humanoid_amp_env_cfg import HumanoidAmpEnvCfg
+from isaaclab.assets import ArticulationCfg
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab_assets import PHYS_HUMANOID_V3_CFG
 
 MOTIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "motions")
+
+
 @configclass
 class HumanoidAmpMultiTaskEnvCfg(HumanoidAmpEnvCfg):
+
+    # robot
+    robot: ArticulationCfg = PHYS_HUMANOID_V3_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot"
+    ).replace(
+        actuators={
+            "body": ImplicitActuatorCfg(
+                joint_names_expr=[".*"],
+                velocity_limit=100.0,
+                stiffness=None,
+                damping=None,
+            ),
+        },
+    )
+
+
     observation_space = 81 + 20 + 2
     motion_file = os.path.join(MOTIONS_DIR, "humanoid_walk.npz") # dummy motion file does not matter
     tasks = [

@@ -34,3 +34,15 @@ class BoxCarryingTaskCfg(TaskCfg):
 @configclass
 class DanceTaskCfg(TaskCfg):
     pass
+
+@configclass
+class SitTaskCfg(TaskCfg):
+    pass
+
+@configclass
+class ClimbTaskCfg(TaskCfg):
+    pass
+
+@configclass
+class HandheldTaskCfg(TaskCfg):
+    pass

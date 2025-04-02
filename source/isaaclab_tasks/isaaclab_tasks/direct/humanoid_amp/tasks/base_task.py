@@ -8,7 +8,6 @@ from __future__ import annotations
 import torch
 
 
-import isaaclab.utils.math as math_utils
 from .task_cfgs import TaskCfg
 
 class Task:
