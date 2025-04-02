@@ -62,7 +62,6 @@ class TokenHSIPolicy(GaussianMixin, Model):
         device,
         state_dim=128,
         task_dims=[20, 38, 27, 42],
-        action_dim=32,
         clip_actions=False,
         clip_log_std=True,
         min_log_std=-20,
@@ -75,7 +74,6 @@ class TokenHSIPolicy(GaussianMixin, Model):
 
         self.state_dim = state_dim
         self.task_dims = task_dims
-        self.action_dim = action_dim
         self.num_tasks = len(task_dims)
         self.task_obs_size = sum(task_dims)
         # Proprioception tokenizer
@@ -93,7 +91,7 @@ class TokenHSIPolicy(GaussianMixin, Model):
         self.transformer = TransformerEncoder(input_dim=64)
 
         # Action Head
-        self.action_head = ActionHead(input_dim=64, action_dim=action_dim)
+        self.action_head = ActionHead(input_dim=64, action_dim=self.num_actions)
 
         # Fixed log standard deviation for policy
         self.log_std_parameter = nn.Parameter(
